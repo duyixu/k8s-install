@@ -1,0 +1,80 @@
+- hosts: all
+  gather_facts: True
+  remote_user: root
+  become: False
+  vars:
+  - docker_home: /app/docker
+  - docker_version: docker-ce-18.06.0.ce
+  - k8s_version: 1.15.2
+  tasks:
+  - name: copy configuration
+    copy:
+     src: "{{item.src}}"
+     dest: "{{item.path}}"
+    with_items:
+      - {'src':'/etc/hosts','path':'/etc'}
+      - {'src':'/etc/sysctl.d/k8s.conf','path':'/etc/sysctl.d/'}
+      - {'src':'/etc/yum.repos.d/kubernetes.repo','path':'/etc/yum.repos.d/'}
+  - name: import k8s_key
+    shell: "rpm --import http://mirrors.aliyun.com/kubernetes/yum/doc/yum-key.gpg && rpm --import http://mirrors.aliyun.com/kubernetes/yum/doc/rpm-package-key.gpg"
+    when: ansible_distribution == "CentOS" and ansible_distribution_major_version == "7"
+  - name: stop firewalld
+    service:
+     name: 'firewalld'
+     state: 'stopped'
+     enabled: 'no'
+  - name: stop selinux
+    selinux:
+     conf: '/etc/selinux/config'
+     state: 'disabled'
+  - name: stop swap
+    shell: "swapoff -a && sed -i '/swap/ d' /etc/fstab"
+  - name: install docker-repo
+    shell: "yum-config-manager --add-repo http://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo"
+    notify: "docker_initial"
+    when: ansible_distribution == "CentOS" and ansible_distribution_major_version == "7"
+  - name: install kubernetes
+    yum:
+     name: "{{item}}"
+     state: 'present'
+    with_items:
+      - kubelet-{{k8s_version}}
+      - kubeadm-{{k8s_version}}
+      - kubectl-{{k8s_version}}
+  - name: start_kubelet 
+    service:
+     name: 'kubelet'
+     state: 'started'
+     enabled: 'yes'
+  - name: install ntp
+    yum:
+     name: 'ntp'
+     state: 'present'
+  - name: start_ntpd
+    service:
+     name: 'ntpd'
+     state: 'started'
+     enabled: 'yes'
+  - name: sync_time
+    cron:
+     name: 'sync_time'
+     minute: '*/5'
+     job: 'ntp time.windows.com'
+  handlers:
+    - name: install_docker
+      yum:
+       name: "{{docker_version}}"
+       state: 'present'
+      listen: "docker_initial"
+    - name: change_home
+      shell: "sed -i '/^ExecStart/ d' /usr/lib/systemd/system/docker.service && sed -i '/^ExecReload/ a ExecStart=/usr/bin/dockerd --data-root {{docker_home}}' /usr/lib/systemd/system/docker.service"
+      listen: "docker_initial"
+    - name: daemon_reload
+      shell: "systemctl daemon-reload"
+      listen: "docker_initial"
+    - name: start_docker
+      service:
+       name: 'docker'
+       state: 'started'
+       enabled: 'yes'
+      listen: "docker_initial"
